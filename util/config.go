@@ -56,6 +56,11 @@ type Config struct {
 	VarsFiles             []string
 	VarsInline            string
 	DisabledResourceTypes []string
+
+	// ShutdownGracePeriod is only used by `goss serve`: how long admitted,
+	// in-flight requests may run after a termination signal before their
+	// validations are cancelled. A zero value selects the built-in default.
+	ShutdownGracePeriod time.Duration
 }
 
 // TimeOutMilliSeconds is the timeout as milliseconds

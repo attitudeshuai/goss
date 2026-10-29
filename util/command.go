@@ -79,6 +79,7 @@ func (e ExecCommand) MarshalYAML() (any, error) {
 
 type Command struct {
 	name           string
+	args           []string
 	Cmd            *exec.Cmd
 	Stdout, Stderr bytes.Buffer
 	Err            error
@@ -89,6 +90,7 @@ func NewCommand(name string, arg ...string) *Command {
 	//fmt.Println(arg)
 	command := new(Command)
 	command.name = name
+	command.args = arg
 	command.Cmd = exec.Command(name, arg...)
 
 	return command

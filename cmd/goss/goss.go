@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -211,7 +212,13 @@ func main() {
 				},
 				Action: func(ctx context.Context, c *cli.Command) error {
 					fatalAlphaIfNeeded(c)
-					return goss.Serve(newRuntimeConfigFromCLI(c))
+					serveErr := goss.Serve(newRuntimeConfigFromCLI(c))
+					if errors.Is(serveErr, goss.ErrShutdownDeadlineExceeded) {
+						// Forced shutdown after the grace period: distinguish
+						// from a clean drain, which exits 0.
+						os.Exit(goss.ShutdownForceExitCode)
+					}
+					return serveErr
 				},
 			},
 			{

@@ -80,7 +80,7 @@ func (c *DefCommand) setup() error {
 		c.err = errEmptyCommand
 		return c.err
 	}
-	err := runCommand(cmd, c.Timeout)
+	err := runCommand(c.Ctx, cmd, c.Timeout)
 
 	// We don't care about ExitError since it's covered by status
 	if _, ok := err.(*exec.ExitError); !ok {
@@ -126,23 +126,31 @@ func (c *DefCommand) Exists() (bool, error) {
 	return false, nil
 }
 
-func runCommand(cmd *util.Command, timeout int) error {
-	c1 := make(chan bool, 1)
-	e1 := make(chan error, 1)
+// runCommand runs cmd, bounding it by the per-check timeout and by ctx
+// cancellation. When ctx is cancelled (for example because `goss serve`
+// exhausted its shutdown grace period) the underlying process is killed and
+// runCommand waits for the reaper goroutine to return, so no goroutine or
+// child process is left behind.
+func runCommand(ctx context.Context, cmd *util.Command, timeout int) error {
 	timeoutD := time.Duration(timeout) * time.Millisecond
+	ctx, cancel := context.WithTimeout(ctx, timeoutD)
+	defer cancel()
+	cmd.AttachContext(ctx)
+
+	done := make(chan error, 1)
 	go func() {
-		err := cmd.Run()
-		if err != nil {
-			e1 <- err
-		}
-		c1 <- true
+		done <- cmd.Run()
 	}()
 	select {
-	case <-c1:
-		return nil
-	case err := <-e1:
+	case err := <-done:
 		return err
-	case <-time.After(timeoutD):
-		return fmt.Errorf("Command execution timed out (%s)", timeoutD)
+	case <-ctx.Done():
+		// CommandContext kills the process on cancellation, so the Run
+		// goroutine returns promptly; wait for it instead of abandoning it.
+		<-done
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("Command execution timed out (%s)", timeoutD)
+		}
+		return ctx.Err()
 	}
 }

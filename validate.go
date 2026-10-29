@@ -165,14 +165,20 @@ func validate(ctx context.Context, sys *system.System, gossConfig GossConfig, sk
 	in := make(chan resource.Resource)
 
 	go func() {
+		defer close(in)
 		for _, t := range gossConfig.Resources() {
 			if util.IsValueInList(t.TypeName(), skipList) || util.IsValueInList(t.TypeKey(), skipList) {
 				t.SetSkip()
 			}
 
-			in <- t
+			select {
+			case in <- t:
+			case <-ctx.Done():
+				// Stop handing out resources: queued checks are cancelled, not
+				// started.
+				return
+			}
 		}
-		close(in)
 	}()
 
 	workerCount := runtime.NumCPU() * 5
@@ -184,8 +190,24 @@ func validate(ctx context.Context, sys *system.System, gossConfig GossConfig, sk
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for f := range in {
-				out <- f.Validate(ctx, sys)
+			for {
+				select {
+				case <-ctx.Done():
+					// A check already in progress runs to completion (or is
+					// killed by the context-aware resource), but no further
+					// checks are picked up.
+					return
+				case f, ok := <-in:
+					if !ok {
+						return
+					}
+					result := f.Validate(ctx, sys)
+					select {
+					case out <- result:
+					case <-ctx.Done():
+						return
+					}
+				}
 			}
 		}()
 	}

@@ -4,11 +4,22 @@
 package util
 
 import (
+	"context"
 	"strings"
 
 	"os/exec"
 	"syscall"
 )
+
+// AttachContext rebuilds the underlying exec.Cmd so that cancelling ctx kills
+// the running process, preserving the Windows-specific SysProcAttr (the
+// command line is carried there rather than in the argument vector).
+// It must be called before Run.
+func (c *Command) AttachContext(ctx context.Context) {
+	sysProcAttr := c.Cmd.SysProcAttr
+	c.Cmd = exec.CommandContext(ctx, c.name)
+	c.Cmd.SysProcAttr = sysProcAttr
+}
 
 func NewCommandForWindowsCmd(name string, arg ...string) *Command {
 	//fmt.Println(arg)

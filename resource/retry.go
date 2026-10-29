@@ -1,6 +1,7 @@
 package resource
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -124,16 +125,33 @@ func retryAttempts(retryCount int) int {
 }
 
 func runWithRetry(retryCount int, retryDelay RetryDelay, validate func() bool) {
+	runWithRetryCtx(context.Background(), retryCount, retryDelay, validate)
+}
+
+// runWithRetryCtx is runWithRetry with an interruptible back-off: when ctx is
+// cancelled between attempts, no further attempt is made. The check already
+// running is not interrupted here (context-aware check implementations stop
+// themselves).
+func runWithRetryCtx(ctx context.Context, retryCount int, retryDelay RetryDelay, validate func() bool) {
 	attempts := retryAttempts(retryCount)
 	delay := normalizedRetryDelay(retryDelay)
 
 	for attempt := 0; attempt < attempts; attempt++ {
+		if ctx.Err() != nil {
+			return
+		}
 		if validate() {
 			return
 		}
 
 		if attempt < attempts-1 {
-			time.Sleep(delay)
+			timer := time.NewTimer(delay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			}
 		}
 	}
 }
