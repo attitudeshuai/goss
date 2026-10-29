@@ -35,7 +35,7 @@ func TestOutputersAreConcurrencySafe(t *testing.T) {
 			for range n {
 				go func() {
 					defer wg.Done()
-					outputer.Output(io.Discard, mixedResults(), util.OutputConfig{})
+					_, _ = outputer.Output(io.Discard, mixedResults(), util.OutputConfig{})
 				}()
 			}
 			wg.Wait()

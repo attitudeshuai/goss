@@ -75,6 +75,29 @@ func getGossConfig(varsFiles []string, varsInline string, specFile string) (cfg 
 	return &gossConfig, nil
 }
 
+// ExitCodeOutputError is returned when the formatted output cannot be written
+// completely: the downstream pipe was closed, the disk is full, or the
+// connection went away. It is deliberately distinct from the check-result
+// exit codes (0/1, and 2 for nagios), from the retry-timeout code (3) and
+// from configuration errors (78), following EX_IOERR in sysexits.h(3).
+const ExitCodeOutputError = 74
+
+// OutputWriteError reports that the active output format hit a write error.
+// Format names the outputer that failed so the single error message can
+// identify which machine-readable stream was truncated.
+type OutputWriteError struct {
+	Format string
+	Err    error
+}
+
+func (e *OutputWriteError) Error() string {
+	return fmt.Sprintf("error writing %s output: %v", e.Format, e.Err)
+}
+
+func (e *OutputWriteError) Unwrap() error {
+	return e.Err
+}
+
 func getOutputer(c *bool, format string) (outputs.Outputer, error) {
 	if c != nil && *c {
 		outputs.SetNoColor(true)
@@ -143,7 +166,12 @@ func ValidateConfig(ctx context.Context, c *util.Config, gossConfig *GossConfig)
 	startTime := time.Now()
 	for {
 		out := validate(ctx, sys, *gossConfig, c.DisabledResourceTypes, c.MaxConcurrent)
-		exitCode := outputer.Output(ofh, out, outputConfig)
+		exitCode, outputErr := outputer.Output(ofh, out, outputConfig)
+		if outputErr != nil {
+			// Stop immediately: no retry banner, no further output. The
+			// outputer has already abandoned the broken writer.
+			return ExitCodeOutputError, &OutputWriteError{Format: c.OutputFormat, Err: outputErr}
+		}
 		if retryTimeout == 0 || exitCode == 0 {
 			return exitCode, nil
 		}

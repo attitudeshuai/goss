@@ -21,7 +21,8 @@ func (r Json) ValidOptions() []*formatOption {
 }
 
 func (r Json) Output(w io.Writer, results <-chan []resource.TestResult,
-	outConfig util.OutputConfig) (exitCode int) {
+	outConfig util.OutputConfig) (exitCode int, err error) {
+	fw := newFailWriter(w)
 
 	var pretty = util.IsValueInList(foPretty, outConfig.FormatOptions)
 	includeRaw := !util.IsValueInList(foExcludeRaw, outConfig.FormatOptions)
@@ -83,15 +84,18 @@ func (r Json) Output(w io.Writer, results <-chan []resource.TestResult,
 	}
 
 	resstr := string(j)
-	fmt.Fprintln(w, resstr)
+	fmt.Fprintln(fw, resstr)
+	if fw.Err() != nil {
+		return 0, fw.Err()
+	}
 
 	if failed > 0 {
 		log.Printf("[DEBUG] FAIL SUMMARY: %s", resstr)
-		return 1
+		return 1, nil
 	}
 
 	log.Printf("[DEBUG] OK SUMMARY: %s", resstr)
-	return 0
+	return 0, nil
 }
 
 func struct2map(i any) map[string]any {

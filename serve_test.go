@@ -4,7 +4,9 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -311,4 +313,70 @@ func makeRequest(t *testing.T, config *util.Config, headers map[string][]string)
 		}
 	}
 	return req
+}
+
+// failingResponseWriter stands in for a connection that dropped before the
+// body was fully sent: Header/WriteHeader behave normally, every Write fails.
+type failingResponseWriter struct {
+	header http.Header
+	status int
+}
+
+func (f *failingResponseWriter) Header() http.Header {
+	if f.header == nil {
+		f.header = http.Header{}
+	}
+	return f.header
+}
+
+func (f *failingResponseWriter) WriteHeader(statusCode int) {
+	f.status = statusCode
+}
+
+func (f *failingResponseWriter) Write([]byte) (int, error) {
+	return 0, assert.AnError
+}
+
+// TestServeBrokenResponseWrite covers a client that disappears while the
+// health response is being sent: the failure is logged exactly once and names
+// the format, the freshly computed results are not left in the cache, and the
+// handler keeps serving subsequent probes normally.
+func TestServeBrokenResponseWrite(t *testing.T) {
+	var logOutput syncBuffer
+	log.SetOutput(&logOutput)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	config, err := util.NewConfig(
+		util.WithSpecFile(filepath.Join("testdata", "passing.goss.yaml")),
+		util.WithOutputFormat("json"),
+	)
+	require.NoError(t, err)
+
+	hh, err := newHealthHandler(config)
+	require.NoError(t, err)
+
+	handler := http.HandlerFunc(hh.ServeHTTP)
+
+	// first probe: the connection cannot accept the body
+	handler.ServeHTTP(&failingResponseWriter{}, makeRequest(t, config, nil))
+
+	logs := logOutput.String()
+	assert.Equal(t, 1, strings.Count(logs, "failed writing"),
+		"a broken response write must be logged exactly once, got:\n%s", logs)
+	assert.Contains(t, logs, "failed writing json health response",
+		"the log line must name the active format")
+
+	// results from the failed response must not have been cached
+	_, cached := hh.cache.Get(resultCacheKey)
+	assert.False(t, cached, "results of a failed response must not be cached")
+
+	// second probe from a healthy client must be served normally and trigger a
+	// fresh validation run rather than reuse anything from the failed request
+	logOutput.Reset()
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, makeRequest(t, config, nil))
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Contains(t, rr.Body.String(), "summary")
+	assert.Contains(t, logOutput.String(), "running tests",
+		"the probe after a broken response must recompute instead of reading a cache entry")
 }

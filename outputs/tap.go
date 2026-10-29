@@ -18,11 +18,13 @@ func (r Tap) ValidOptions() []*formatOption {
 }
 
 func (r Tap) Output(w io.Writer, results <-chan []resource.TestResult,
-	outConfig util.OutputConfig) (exitCode int) {
+	outConfig util.OutputConfig) (exitCode int, err error) {
 	includeRaw := !util.IsValueInList(foExcludeRaw, outConfig.FormatOptions)
 
 	sort := util.IsValueInList(foSort, outConfig.FormatOptions)
 	results = getResults(results, sort)
+
+	fw := newFailWriter(w)
 
 	testCount := 0
 	failed := 0
@@ -46,15 +48,19 @@ func (r Tap) Output(w io.Writer, results <-chan []resource.TestResult,
 		}
 	}
 
-	fmt.Fprintf(w, "1..%d\n", testCount)
+	fmt.Fprintf(fw, "1..%d\n", testCount)
 
 	for i := 0; i < testCount; i++ {
-		fmt.Fprintf(w, "%s", summary[i])
+		fmt.Fprintf(fw, "%s", summary[i])
+	}
+
+	if fw.Err() != nil {
+		return 0, fw.Err()
 	}
 
 	if failed > 0 {
-		return 1
+		return 1, nil
 	}
 
-	return 0
+	return 0, nil
 }

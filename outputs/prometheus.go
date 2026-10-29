@@ -38,7 +38,9 @@ func (r Prometheus) ValidOptions() []*formatOption {
 
 // Output converts the results into the prometheus text-format.
 func (r Prometheus) Output(w io.Writer, results <-chan []resource.TestResult,
-	outConfig util.OutputConfig) (exitCode int) {
+	outConfig util.OutputConfig) (exitCode int, err error) {
+	fw := newFailWriter(w)
+
 	verbose := util.IsValueInList(foVerbose, outConfig.FormatOptions)
 
 	if registry == nil {
@@ -77,21 +79,27 @@ func (r Prometheus) Output(w io.Writer, results <-chan []resource.TestResult,
 
 	metricsFamilies, err := registry.Gather()
 	if err != nil {
-		return -1
+		return -1, nil
 	}
 
-	encoder := expfmt.NewEncoder(w, expfmt.NewFormat(expfmt.TypeTextPlain))
+	encoder := expfmt.NewEncoder(fw, expfmt.NewFormat(expfmt.TypeTextPlain))
 	for _, mf := range metricsFamilies {
 		err := encoder.Encode(mf)
 		if err != nil {
-			return -1
+			if fw.Err() != nil {
+				return 0, fw.Err()
+			}
+			return 0, err
 		}
+	}
+	if err := fw.Err(); err != nil {
+		return 0, err
 	}
 
 	if overallOutcome == resource.OutcomeFail {
-		return 1
+		return 1, nil
 	}
-	return 0
+	return 0, nil
 }
 
 func setupMetrics(verbose bool) {

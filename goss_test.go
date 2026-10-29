@@ -2,14 +2,24 @@ package goss
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/goss-org/goss/outputs"
 	"github.com/goss-org/goss/resource"
 	"github.com/goss-org/goss/util"
 )
+
+// alwaysFailingWriter rejects every write, like a closed pipe or a full disk.
+type alwaysFailingWriter struct{}
+
+func (alwaysFailingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("simulated write failure")
+}
 
 func checkErr(t *testing.T, err error, format string, a ...any) {
 	t.Helper()
@@ -118,6 +128,37 @@ func TestUseAsPackage(t *testing.T) {
 
 	if okcount != passed {
 		t.Fatalf("expected %d passed but got %d", passed, okcount)
+	}
+}
+
+// TestValidateWriteFailure pins the write-failure contract at the Validate
+// boundary: a writer that fails ends the run with the dedicated output-error
+// code (distinct from check-failure codes) and an error naming the active
+// format, without retrying.
+func TestValidateWriteFailure(t *testing.T) {
+	cfg, err := util.NewConfig(
+		util.WithSpecFile(filepath.Join("testdata", "matching_basic.yaml")),
+		util.WithOutputFormat("rspecish"),
+		util.WithResultWriter(alwaysFailingWriter{}),
+	)
+	checkErr(t, err, "new config failed")
+
+	code, err := Validate(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected a write error, got nil")
+	}
+	if code != ExitCodeOutputError {
+		t.Fatalf("write failure must exit %d, got %d", ExitCodeOutputError, code)
+	}
+	var writeErr *OutputWriteError
+	if !errors.As(err, &writeErr) {
+		t.Fatalf("expected *OutputWriteError, got %T: %v", err, err)
+	}
+	if writeErr.Format != "rspecish" {
+		t.Fatalf("error must name the active format, got %q", writeErr.Format)
+	}
+	if writeErr.Err == nil {
+		t.Fatal("OutputWriteError must wrap the underlying write error")
 	}
 }
 

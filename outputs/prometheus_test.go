@@ -519,7 +519,8 @@ func TestPrometheusOutput(t *testing.T) {
 
 			defer resetMetrics()
 
-			exitCode := outputer.Output(buf, makeResults(testCase.results...), config)
+			exitCode, err := outputer.Output(buf, makeResults(testCase.results...), config)
+			assert.NoError(t, err)
 			assert.Equal(t, testCase.expectedExitCode, exitCode)
 
 			output := buf.String()

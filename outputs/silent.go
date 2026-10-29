@@ -14,7 +14,7 @@ func (r Silent) ValidOptions() []*formatOption {
 }
 
 func (r Silent) Output(w io.Writer, results <-chan []resource.TestResult,
-	outConfig util.OutputConfig) (exitCode int) {
+	outConfig util.OutputConfig) (exitCode int, err error) {
 
 	var failed int
 	for resultGroup := range results {
@@ -26,8 +26,10 @@ func (r Silent) Output(w io.Writer, results <-chan []resource.TestResult,
 		}
 	}
 
+	// silent never writes, so there is no write error to report and the
+	// shared write-error contract is satisfied with a nil error.
 	if failed > 0 {
-		return 1
+		return 1, nil
 	}
-	return 0
+	return 0, nil
 }

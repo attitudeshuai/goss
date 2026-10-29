@@ -20,7 +20,8 @@ func (r Nagios) ValidOptions() []*formatOption {
 }
 
 func (r Nagios) Output(w io.Writer, results <-chan []resource.TestResult,
-	outConfig util.OutputConfig) (exitCode int) {
+	outConfig util.OutputConfig) (exitCode int, err error) {
+	fw := newFailWriter(w)
 
 	var testCount, failed, skipped int
 
@@ -56,22 +57,28 @@ func (r Nagios) Output(w io.Writer, results <-chan []resource.TestResult,
 
 	duration := endTime.Sub(startTime)
 	if failed > 0 {
-		fmt.Fprintf(w, "GOSS CRITICAL - Count: %d, Failed: %d, Skipped: %d, Duration: %.3fs", testCount, failed, skipped, duration.Seconds())
+		fmt.Fprintf(fw, "GOSS CRITICAL - Count: %d, Failed: %d, Skipped: %d, Duration: %.3fs", testCount, failed, skipped, duration.Seconds())
 		if perfdata {
-			fmt.Fprintf(w, "|total=%d failed=%d skipped=%d duration=%.3fs", testCount, failed, skipped, duration.Seconds())
+			fmt.Fprintf(fw, "|total=%d failed=%d skipped=%d duration=%.3fs", testCount, failed, skipped, duration.Seconds())
 		}
-		fmt.Fprint(w, "\n")
+		fmt.Fprint(fw, "\n")
 		if verbose {
 			for i := 0; i < failed; i++ {
-				fmt.Fprintf(w, "%s", summary[i])
+				fmt.Fprintf(fw, "%s", summary[i])
 			}
 		}
-		return 2
+		if fw.Err() != nil {
+			return 0, fw.Err()
+		}
+		return 2, nil
 	}
-	fmt.Fprintf(w, "GOSS OK - Count: %d, Failed: %d, Skipped: %d, Duration: %.3fs", testCount, failed, skipped, duration.Seconds())
+	fmt.Fprintf(fw, "GOSS OK - Count: %d, Failed: %d, Skipped: %d, Duration: %.3fs", testCount, failed, skipped, duration.Seconds())
 	if perfdata {
-		fmt.Fprintf(w, "|total=%d failed=%d skipped=%d duration=%.3fs", testCount, failed, skipped, duration.Seconds())
+		fmt.Fprintf(fw, "|total=%d failed=%d skipped=%d duration=%.3fs", testCount, failed, skipped, duration.Seconds())
 	}
-	fmt.Fprint(w, "\n")
-	return 0
+	fmt.Fprint(fw, "\n")
+	if fw.Err() != nil {
+		return 0, fw.Err()
+	}
+	return 0, nil
 }

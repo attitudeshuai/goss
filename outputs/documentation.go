@@ -18,11 +18,13 @@ func (r Documentation) ValidOptions() []*formatOption {
 }
 
 func (r Documentation) Output(w io.Writer, results <-chan []resource.TestResult,
-	outConfig util.OutputConfig) (exitCode int) {
+	outConfig util.OutputConfig) (exitCode int, err error) {
 	includeRaw := !util.IsValueInList(foExcludeRaw, outConfig.FormatOptions)
 
 	sort := util.IsValueInList(foSort, outConfig.FormatOptions)
 	results = getResults(results, sort)
+
+	fw := newFailWriter(w)
 
 	var startTime time.Time
 	var endTime time.Time
@@ -34,7 +36,7 @@ func (r Documentation) Output(w io.Writer, results <-chan []resource.TestResult,
 		first := resultGroup[0]
 		header := header(first)
 		if header != "" {
-			fmt.Fprint(w, header)
+			fmt.Fprint(fw, header)
 		}
 		for _, testResult := range resultGroup {
 			if startTime.IsZero() || testResult.StartTime.Before(startTime) {
@@ -45,13 +47,13 @@ func (r Documentation) Output(w io.Writer, results <-chan []resource.TestResult,
 			}
 			switch testResult.Result {
 			case resource.SUCCESS:
-				fmt.Fprintln(w, humanizeResult(testResult, false, includeRaw))
+				fmt.Fprintln(fw, humanizeResult(testResult, false, includeRaw))
 			case resource.SKIP:
-				fmt.Fprintln(w, humanizeResult(testResult, false, includeRaw))
+				fmt.Fprintln(fw, humanizeResult(testResult, false, includeRaw))
 				failedOrSkippedGroup = append(failedOrSkippedGroup, testResult)
 				skipped++
 			case resource.FAIL:
-				fmt.Fprintln(w, humanizeResult(testResult, false, includeRaw))
+				fmt.Fprintln(fw, humanizeResult(testResult, false, includeRaw))
 				failedOrSkippedGroup = append(failedOrSkippedGroup, testResult)
 				failed++
 			}
@@ -62,12 +64,15 @@ func (r Documentation) Output(w io.Writer, results <-chan []resource.TestResult,
 		}
 	}
 
-	fmt.Fprint(w, "\n\n")
-	fmt.Fprint(w, failedOrSkippedSummary(failedOrSkipped, includeRaw))
+	fmt.Fprint(fw, "\n\n")
+	fmt.Fprint(fw, failedOrSkippedSummary(failedOrSkipped, includeRaw))
 
-	fmt.Fprint(w, summary(startTime, endTime, testCount, failed, skipped))
-	if failed > 0 {
-		return 1
+	fmt.Fprint(fw, summary(startTime, endTime, testCount, failed, skipped))
+	if fw.Err() != nil {
+		return 0, fw.Err()
 	}
-	return 0
+	if failed > 0 {
+		return 1, nil
+	}
+	return 0, nil
 }

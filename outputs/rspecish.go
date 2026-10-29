@@ -18,7 +18,8 @@ func (r Rspecish) ValidOptions() []*formatOption {
 }
 
 func (r Rspecish) Output(w io.Writer, results <-chan []resource.TestResult,
-	outConfig util.OutputConfig) (exitCode int) {
+	outConfig util.OutputConfig) (exitCode int, err error) {
+	fw := newFailWriter(w)
 
 	sort := util.IsValueInList(foSort, outConfig.FormatOptions)
 	results = getResults(results, sort)
@@ -43,15 +44,15 @@ func (r Rspecish) Output(w io.Writer, results <-chan []resource.TestResult,
 			switch testResult.Result {
 			case resource.SUCCESS:
 				logTrace("TRACE", "SUCCESS", testResult, false)
-				fmt.Fprint(w, green("."))
+				fmt.Fprint(fw, green("."))
 			case resource.SKIP:
 				logTrace("TRACE", "SKIP", testResult, false)
-				fmt.Fprint(w, yellow("S"))
+				fmt.Fprint(fw, yellow("S"))
 				failedOrSkippedGroup = append(failedOrSkippedGroup, testResult)
 				skipped++
 			case resource.FAIL:
 				logTrace("TRACE", "FAIL", testResult, false)
-				fmt.Fprint(w, red("F"))
+				fmt.Fprint(fw, red("F"))
 				failedOrSkippedGroup = append(failedOrSkippedGroup, testResult)
 				failed++
 			}
@@ -62,18 +63,21 @@ func (r Rspecish) Output(w io.Writer, results <-chan []resource.TestResult,
 		}
 	}
 
-	fmt.Fprint(w, "\n\n")
+	fmt.Fprint(fw, "\n\n")
 	includeRaw := !util.IsValueInList(foExcludeRaw, outConfig.FormatOptions)
 
-	fmt.Fprint(w, failedOrSkippedSummary(failedOrSkipped, includeRaw))
+	fmt.Fprint(fw, failedOrSkippedSummary(failedOrSkipped, includeRaw))
 
 	outstr := summary(startTime, endTime, testCount, failed, skipped)
-	fmt.Fprint(w, outstr)
+	fmt.Fprint(fw, outstr)
+	if fw.Err() != nil {
+		return 0, fw.Err()
+	}
 	resstr := strings.ReplaceAll(outstr, "\n", " ")
 	if failed > 0 {
 		log.Printf("[DEBUG] FAIL SUMMARY: %s", resstr)
-		return 1
+		return 1, nil
 	}
 	log.Printf("[DEBUG] OK SUMMARY: %s", resstr)
-	return 0
+	return 0, nil
 }

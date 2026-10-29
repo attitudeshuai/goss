@@ -47,7 +47,9 @@ func (s *StructureTestSummary) String() string {
 }
 
 // Output processes output from tests into StructuredOutput written to w as a string
-func (r Structured) Output(w io.Writer, results <-chan []resource.TestResult, outConfig util.OutputConfig) (exitCode int) {
+func (r Structured) Output(w io.Writer, results <-chan []resource.TestResult, outConfig util.OutputConfig) (exitCode int, err error) {
+	fw := newFailWriter(w)
+
 	includeRaw := !util.IsValueInList(foExcludeRaw, outConfig.FormatOptions)
 
 	sort := util.IsValueInList(foSort, outConfig.FormatOptions)
@@ -95,11 +97,14 @@ func (r Structured) Output(w io.Writer, results <-chan []resource.TestResult, ou
 		j, _ = json.Marshal(result)
 	}
 
-	fmt.Fprintln(w, string(j))
-
-	if result.Summary.Failed > 0 {
-		return 1
+	fmt.Fprintln(fw, string(j))
+	if fw.Err() != nil {
+		return 0, fw.Err()
 	}
 
-	return 0
+	if result.Summary.Failed > 0 {
+		return 1, nil
+	}
+
+	return 0, nil
 }

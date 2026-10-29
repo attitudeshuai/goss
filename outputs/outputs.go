@@ -23,8 +23,39 @@ type formatOption struct {
 }
 
 type Outputer interface {
-	Output(io.Writer, <-chan []resource.TestResult, util.OutputConfig) int
+	Output(io.Writer, <-chan []resource.TestResult, util.OutputConfig) (int, error)
 	ValidOptions() []*formatOption
+}
+
+// failWriter wraps an io.Writer and remembers its first write error. After a
+// failure every subsequent write is accepted and discarded, so a broken pipe,
+// a full disk or a closed connection never receives another byte: the
+// machine-readable output already on the wire is neither rolled back nor
+// extended (no closing markers are appended), while the outputer keeps
+// draining the results channel instead of stranding validator goroutines.
+type failWriter struct {
+	w   io.Writer
+	err error
+}
+
+func newFailWriter(w io.Writer) *failWriter {
+	return &failWriter{w: w}
+}
+
+func (fw *failWriter) Write(p []byte) (int, error) {
+	if fw.err != nil {
+		return len(p), nil
+	}
+	n, err := fw.w.Write(p)
+	if err != nil {
+		fw.err = err
+	}
+	return n, err
+}
+
+// Err returns the first error encountered while writing, if any.
+func (fw *failWriter) Err() error {
+	return fw.err
 }
 
 var (

@@ -21,11 +21,13 @@ func (r JUnit) ValidOptions() []*formatOption {
 }
 
 func (r JUnit) Output(w io.Writer, results <-chan []resource.TestResult,
-	outConfig util.OutputConfig) (exitCode int) {
+	outConfig util.OutputConfig) (exitCode int, err error) {
 	includeRaw := !util.IsValueInList(foExcludeRaw, outConfig.FormatOptions)
 
 	sort := util.IsValueInList(foSort, outConfig.FormatOptions)
 	results = getResults(results, sort)
+
+	fw := newFailWriter(w)
 
 	SetNoColor(true)
 	var testCount, failed, skipped int
@@ -84,22 +86,26 @@ func (r JUnit) Output(w io.Writer, results <-chan []resource.TestResult,
 	}
 
 	duration := endTime.Sub(startTime)
-	fmt.Fprintln(w, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
-	fmt.Fprintf(w, "<testsuite name=\"goss\" errors=\"0\" tests=\"%d\" "+
+	fmt.Fprintln(fw, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
+	fmt.Fprintf(fw, "<testsuite name=\"goss\" errors=\"0\" tests=\"%d\" "+
 		"failures=\"%d\" skipped=\"%d\" time=\"%.3f\" timestamp=\"%s\">\n",
 		testCount, failed, skipped, duration.Seconds(), timestamp)
 
 	for i := 0; i < testCount; i++ {
-		fmt.Fprintf(w, "%s", summary[i])
+		fmt.Fprintf(fw, "%s", summary[i])
 	}
 
-	fmt.Fprintln(w, "</testsuite>")
+	fmt.Fprintln(fw, "</testsuite>")
+
+	if fw.Err() != nil {
+		return 0, fw.Err()
+	}
 
 	if failed > 0 {
-		return 1
+		return 1, nil
 	}
 
-	return 0
+	return 0, nil
 }
 
 func escapeString(str string) string {

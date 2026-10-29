@@ -24,6 +24,9 @@ import (
 // flooded the logs of any container being polled by a load balancer.
 const cacheMissLogFormat = "[DEBUG] Stale cache[%s], running tests"
 
+// resultCacheKey is the single cache entry holding the latest test results.
+const resultCacheKey = "res"
+
 func Serve(c *util.Config) error {
 	err := setLogLevel(c)
 	if err != nil {
@@ -94,28 +97,34 @@ func (h healthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp := h.processAndEnsureCached(r.Context(), negotiatedContentType, outputer)
 	w.Header().Set("Content-Type", negotiatedContentType)
 	w.WriteHeader(resp.statusCode)
+	if _, err := resp.body.WriteTo(w); err != nil {
+		// The client went away mid-response. Results produced for a response
+		// that never went out must not stay cached; log once and move on, the
+		// next probe is handled like any other.
+		h.cache.Delete(resultCacheKey)
+		log.Printf("[ERROR] %v: failed writing %s health response: %v", r.RemoteAddr, outputFormat, err)
+		return
+	}
 	logBody := ""
 	if resp.statusCode != http.StatusOK {
 		logBody = " - " + resp.body.String()
 	}
-	resp.body.WriteTo(w)
 	log.Printf("[DEBUG] %v: status %d%s", r.RemoteAddr, resp.statusCode, logBody)
 }
 
 func (h healthHandler) processAndEnsureCached(ctx context.Context, negotiatedContentType string, outputer outputs.Outputer) res {
 	var tra [][]resource.TestResult
-	cacheKey := "res"
 	// Held across the lookup so a miss does not let a second request start its
 	// own validate() before the first one has filled the cache.
 	h.gossMu.Lock()
-	if tmp, found := h.cache.Get(cacheKey); found {
-		log.Printf("[TRACE] Returning cached[%s].", cacheKey)
+	if tmp, found := h.cache.Get(resultCacheKey); found {
+		log.Printf("[TRACE] Returning cached[%s].", resultCacheKey)
 		tra = tmp.([][]resource.TestResult)
 	} else {
-		log.Printf(cacheMissLogFormat, cacheKey)
+		log.Printf(cacheMissLogFormat, resultCacheKey)
 		h.sys = system.New(h.c.PackageManager)
 		tra = h.validate(ctx)
-		h.cache.SetDefault(cacheKey, tra)
+		h.cache.SetDefault(resultCacheKey, tra)
 	}
 	h.gossMu.Unlock()
 
@@ -128,7 +137,9 @@ func (h healthHandler) output(trc <-chan []resource.TestResult, outputer outputs
 	outputConfig := util.OutputConfig{
 		FormatOptions: h.c.FormatOptions,
 	}
-	exitCode := outputer.Output(&b, trc, outputConfig)
+	// The response is fully rendered into b; a bytes.Buffer never fails to
+	// write, so there is no write error to handle before ServeHTTP streams it.
+	exitCode, _ := outputer.Output(&b, trc, outputConfig)
 	resp := res{
 		body: b,
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -156,7 +157,15 @@ func main() {
 					fatalAlphaIfNeeded(c)
 					code, err := goss.Validate(ctx, newRuntimeConfigFromCLI(c))
 					if err != nil {
-						color.Red(fmt.Sprintf("Error: %v\n", err))
+						// A broken writer is reported once on stderr with the
+						// active format name, never as a stack trace; other
+						// errors keep their existing colored stdout report.
+						var writeErr *goss.OutputWriteError
+						if errors.As(err, &writeErr) {
+							fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+						} else {
+							color.Red(fmt.Sprintf("Error: %v\n", err))
+						}
 					}
 					os.Exit(code)
 
