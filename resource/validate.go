@@ -107,15 +107,32 @@ func skipResult(typeS string, id string, title string, meta meta, property strin
 	}
 }
 
+// closeReader releases the resource behind a content-check reader once the
+// content has been consumed. File-backed readers (*os.File) keep a file
+// descriptor open until Close, so a long-running process (e.g. goss serve
+// revalidating on every cache cycle) would otherwise accumulate one
+// descriptor per contents check, whether the match passed, failed, or reading
+// errored. Readers without a Close method (the strings/bytes readers used by
+// commands, headers and the matching resource) are left untouched. Close
+// errors are deliberately ignored: they must not change the result or its
+// message.
+func closeReader(r io.Reader) {
+	if c, ok := r.(io.Closer); ok {
+		_ = c.Close()
+	}
+}
+
 func ValidateValue(res ResourceRead, property string, expectedValue any, actual any, skip bool) TestResult {
 	if f, ok := actual.(func() (io.Reader, error)); ok {
 		if _, ok := expectedValue.([]any); !ok {
 			actual = func() (string, error) {
 				v, err := f()
 				if err != nil {
+					closeReader(v)
 					return "", err
 				}
 				i, err := matchers.ReaderToString{}.Transform(v)
+				closeReader(v)
 				if err != nil {
 					return "", err
 				}
@@ -189,6 +206,10 @@ func ValidateGomegaValue(res ResourceRead, property string, expectedValue any, a
 				foundValue = i.(string)
 			}
 		}
+		// Close regardless of match outcome or read error; the contents have
+		// already been consumed (or failed to) and the descriptor must not
+		// outlive this check.
+		closeReader(r)
 		gomegaMatcher = matchers.HavePatterns(expectedValue)
 	default:
 		err = fmt.Errorf("Unknown method signature: %t", f)

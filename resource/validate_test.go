@@ -199,3 +199,94 @@ func TestResultMarshaling(t *testing.T) {
 		t.Fatalf("expected to receive 'dummy error', got: %v", res.Err.Error())
 	}
 }
+
+// trackingReadCloser counts Close calls on a content reader. With readErr
+// set, it serves the wrapped content and then fails the read that would
+// otherwise report EOF, mimicking a read error partway through the file.
+type trackingReadCloser struct {
+	reader  io.Reader
+	readErr error
+	closed  int
+}
+
+func (r *trackingReadCloser) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if r.readErr != nil && err == io.EOF {
+		err = r.readErr
+	}
+	return n, err
+}
+
+func (r *trackingReadCloser) Close() error {
+	r.closed++
+	return nil
+}
+
+// Every content check must close the reader it opened, whether the match
+// passes or fails, for both the pattern-list and single-value matcher shapes.
+func TestValidateValueClosesReaderAfterContentCheck(t *testing.T) {
+	cases := []struct {
+		name     string
+		expected any
+		want     int
+	}{
+		{"patterns-pass", []any{"foo"}, SUCCESS},
+		{"patterns-fail", []any{"this-pattern-is-absent"}, FAIL},
+		{"scalar-pass", "foo\nbar", SUCCESS},
+		{"scalar-fail", "this-pattern-is-absent", FAIL},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rc := &trackingReadCloser{reader: strings.NewReader("foo\nbar")}
+			got := ValidateValue(&FakeResource{"id"}, "contents", c.expected,
+				func() (io.Reader, error) { return rc, nil }, false)
+			if got.Result != c.want {
+				t.Fatalf("result = %v, want %v", got.Result, c.want)
+			}
+			if rc.closed != 1 {
+				t.Fatalf("reader closed %d time(s), want exactly 1", rc.closed)
+			}
+		})
+	}
+}
+
+// A reader handed back together with an open error must still be released.
+func TestValidateValueClosesReaderOnOpenError(t *testing.T) {
+	for _, expected := range []any{[]any{"foo"}, "foo"} {
+		rc := &trackingReadCloser{reader: strings.NewReader("foo")}
+		got := ValidateValue(&FakeResource{"id"}, "contents", expected,
+			func() (io.Reader, error) { return rc, errSome }, false)
+		if got.Result != FAIL {
+			t.Fatalf("%T: result = %v, want FAIL", expected, got.Result)
+		}
+		if rc.closed != 1 {
+			t.Fatalf("%T: reader closed %d time(s), want exactly 1", expected, rc.closed)
+		}
+	}
+}
+
+// A read that fails after delivering some content must still produce one
+// failure result and close the reader instead of panicking or leaking it.
+func TestValidateValueReadErrorFailsAndCloses(t *testing.T) {
+	// Pattern-list shape: the read error must surface as a single FAIL result.
+	rc := &trackingReadCloser{reader: strings.NewReader("foo\nbar"), readErr: errDummy}
+	got := ValidateValue(&FakeResource{"id"}, "contents", []any{"foo"},
+		func() (io.Reader, error) { return rc, nil }, false)
+	if got.Result != FAIL {
+		t.Fatalf("patterns: result = %v, want FAIL", got.Result)
+	}
+	if rc.closed != 1 {
+		t.Fatalf("patterns: reader closed %d time(s), want exactly 1", rc.closed)
+	}
+
+	// Scalar shape: the read error is reported directly on the failing result.
+	rc2 := &trackingReadCloser{reader: strings.NewReader("foo\nbar"), readErr: errDummy}
+	got = ValidateValue(&FakeResource{"id"}, "contents", "foo",
+		func() (io.Reader, error) { return rc2, nil }, false)
+	if got.Result != FAIL || got.Err == nil || got.Err.Error() != "dummy error" {
+		t.Fatalf("scalar: got result = %v, err = %v, want FAIL with %q", got.Result, got.Err, errDummy)
+	}
+	if rc2.closed != 1 {
+		t.Fatalf("scalar: reader closed %d time(s), want exactly 1", rc2.closed)
+	}
+}
