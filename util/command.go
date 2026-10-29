@@ -95,6 +95,16 @@ func NewCommand(name string, arg ...string) *Command {
 }
 
 func (c *Command) Run() error {
+	if err := c.Start(); err != nil {
+		return err
+	}
+	return c.Wait()
+}
+
+// Start wires the output buffers, resolves the binary and starts the process.
+// It is split from Wait so timeout-aware callers own a fully started command
+// (including its PID) before a timer or another goroutine can touch it.
+func (c *Command) Start() error {
 	c.Cmd.Stdout = &c.Stdout
 	c.Cmd.Stderr = &c.Stderr
 
@@ -107,7 +117,12 @@ func (c *Command) Run() error {
 		c.Err = err
 		return c.Err
 	}
+	return nil
+}
 
+// Wait blocks until the command exits, reaps it, drains its output buffers and
+// records the exit status. A command killed by a signal reports -1.
+func (c *Command) Wait() error {
 	if err := c.Cmd.Wait(); err != nil {
 		c.Err = err
 		if exiterr, ok := err.(*exec.ExitError); ok {

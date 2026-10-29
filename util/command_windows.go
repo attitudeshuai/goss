@@ -4,11 +4,24 @@
 package util
 
 import (
+	"strconv"
 	"strings"
 
 	"os/exec"
 	"syscall"
 )
+
+// KillProcessTree forcibly terminates the command and every process it
+// spawned. taskkill's /T flag walks the process tree parented to the command
+// (cmd.exe and everything it launched) and /F forces termination, the Windows
+// counterpart of SIGKILL on POSIX.
+func (c *Command) KillProcessTree() error {
+	if c.Cmd == nil || c.Cmd.Process == nil {
+		return nil
+	}
+	kill := exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(c.Cmd.Process.Pid))
+	return kill.Run()
+}
 
 func NewCommandForWindowsCmd(name string, arg ...string) *Command {
 	//fmt.Println(arg)

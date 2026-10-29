@@ -126,23 +126,55 @@ func (c *DefCommand) Exists() (bool, error) {
 	return false, nil
 }
 
+// runCommand runs cmd and enforces timeout. On timeout it kills the whole
+// process tree started for the check (the shell and everything it spawned)
+// and waits for the runner goroutine to finish reaping the process and
+// draining its output before returning. That guarantees the timed-out command
+// keeps no residual or zombie processes, cannot write into the results after
+// the fact, and cannot race the readers of its output buffers. A non-positive
+// timeout means no time limit: the command runs to completion.
 func runCommand(cmd *util.Command, timeout int) error {
-	c1 := make(chan bool, 1)
-	e1 := make(chan error, 1)
-	timeoutD := time.Duration(timeout) * time.Millisecond
-	go func() {
-		err := cmd.Run()
-		if err != nil {
-			e1 <- err
+	prepareCommand(cmd)
+
+	// ExitErrors carry the command's exit status and are not setup errors, so
+	// they are reported through cmd.Status exactly as before.
+	normalize := func(err error) error {
+		if _, ok := err.(*exec.ExitError); ok {
+			return nil
 		}
-		c1 <- true
-	}()
-	select {
-	case <-c1:
-		return nil
-	case err := <-e1:
 		return err
-	case <-time.After(timeoutD):
+	}
+
+	// Start in this goroutine so the process (and its PID) exists before the
+	// timeout timer is armed and before any other goroutine can touch it.
+	if err := cmd.Start(); err != nil {
+		return normalize(err)
+	}
+
+	// Wait runs in its own goroutine; it reaps the process and joins the
+	// output-copy goroutines, so receiving from it establishes that no output
+	// buffer can still be written to.
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	if timeout <= 0 {
+		return normalize(<-done)
+	}
+
+	timeoutD := time.Duration(timeout) * time.Millisecond
+	timer := time.NewTimer(timeoutD)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return normalize(err)
+	case <-timer.C:
+		// Best effort: SIGKILL the process group / kill the Windows tree.
+		// ESRCH-style "already gone" answers are harmless; waiting on the
+		// runner below is what guarantees the process has been reaped.
+		_ = cmd.KillProcessTree()
+		<-done
 		return fmt.Errorf("Command execution timed out (%s)", timeoutD)
 	}
 }
