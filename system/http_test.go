@@ -1,10 +1,14 @@
 package system
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goss-org/goss/util"
 )
@@ -40,6 +44,48 @@ func TestDefHTTPCloseClosesBodyAfterBodyRead(t *testing.T) {
 	}
 	if !body.closed {
 		t.Fatal("Close() did not close the response body")
+	}
+}
+
+// TestDefHTTPRequestCancelledByContext verifies that an HTTP check in flight
+// returns promptly when its context is cancelled instead of waiting out the
+// client timeout.
+func TestDefHTTPRequestCancelledByContext(t *testing.T) {
+	requestInFlight := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestInFlight)
+		<-r.Context().Done()
+		<-release
+	}))
+	t.Cleanup(func() {
+		close(release)
+		srv.Close()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	h := NewDefHTTP(ctx, srv.URL, nil, util.Config{Timeout: 30000, Method: http.MethodGet})
+
+	statusErr := make(chan error, 1)
+	go func() {
+		_, err := h.Status()
+		statusErr <- err
+	}()
+
+	<-requestInFlight
+	start := time.Now()
+	cancel()
+
+	select {
+	case err := <-statusErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("got %v, want context.Canceled", err)
+		}
+		if elapsed := time.Since(start); elapsed > 3*time.Second {
+			t.Errorf("HTTP check took %s to return after cancellation", elapsed)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("HTTP check did not return after the context was cancelled")
 	}
 }
 

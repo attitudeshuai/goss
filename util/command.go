@@ -2,6 +2,7 @@ package util
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 
 	//"fmt"
@@ -86,10 +87,18 @@ type Command struct {
 }
 
 func NewCommand(name string, arg ...string) *Command {
+	return NewCommandContext(context.Background(), name, arg...)
+}
+
+// NewCommandContext is NewCommand with a context tied to the process lifetime:
+// when ctx is cancelled the running process is killed, so a cancelled check
+// does not leave a subprocess (and the goroutine waiting on it) behind.
+func NewCommandContext(ctx context.Context, name string, arg ...string) *Command {
 	//fmt.Println(arg)
 	command := new(Command)
 	command.name = name
-	command.Cmd = exec.Command(name, arg...)
+	command.Cmd = exec.CommandContext(ctx, name, arg...)
+	configureContextCancel(command.Cmd)
 
 	return command
 }

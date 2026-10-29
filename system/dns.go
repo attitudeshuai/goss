@@ -24,6 +24,7 @@ type DNS interface {
 }
 
 type DefDNS struct {
+	ctx        context.Context
 	host       string
 	resolvable bool
 	addrs      []string
@@ -34,7 +35,7 @@ type DefDNS struct {
 	qtype      string
 }
 
-func NewDefDNS(_ context.Context, host string, system *System, config util.Config) DNS {
+func NewDefDNS(ctx context.Context, host string, system *System, config util.Config) DNS {
 	var h string
 	var t string
 
@@ -47,6 +48,7 @@ func NewDefDNS(_ context.Context, host string, system *System, config util.Confi
 	}
 
 	return &DefDNS{
+		ctx:     ctx,
 		host:    h,
 		Timeout: config.TimeOutMilliSeconds(),
 		server:  config.Server,
@@ -73,10 +75,16 @@ func (d *DefDNS) setup() error {
 	d.loaded = true
 
 	for i := 0; i < 3; i++ {
-		addrs, err := DNSlookup(d.host, d.server, d.qtype, d.Timeout)
+		addrs, err := DNSlookup(d.ctx, d.host, d.server, d.qtype, d.Timeout)
 		if err != nil || len(addrs) == 0 {
 			d.resolvable = false
 			d.addrs = []string{}
+			// Do not retry after cancellation; surface it so the check
+			// returns promptly.
+			if ctxErr := d.ctx.Err(); ctxErr != nil {
+				d.err = ctxErr
+				return d.err
+			}
 			// DNSError is resolvable == false, ignore error
 			if _, ok := err.(*net.DNSError); ok {
 				return nil
@@ -110,7 +118,7 @@ func (d *DefDNS) Exists() (bool, error) {
 	return false, nil
 }
 
-func DNSlookup(host string, server string, qtype string, timeout int) ([]string, error) {
+func DNSlookup(ctx context.Context, host string, server string, qtype string, timeout int) ([]string, error) {
 	c1 := make(chan []string, 1)
 	e1 := make(chan error, 1)
 	timeoutD := time.Duration(timeout) * time.Millisecond
@@ -125,59 +133,68 @@ func DNSlookup(host string, server string, qtype string, timeout int) ([]string,
 
 			switch qtype {
 			case "A":
-				addrs, err = LookupA(host, server, c, m)
+				addrs, err = LookupA(ctx, host, server, c, m)
 			case "AAAA":
-				addrs, err = LookupAAAA(host, server, c, m)
+				addrs, err = LookupAAAA(ctx, host, server, c, m)
 			case "PTR":
-				addrs, err = LookupPTR(host, server, c, m)
+				addrs, err = LookupPTR(ctx, host, server, c, m)
 			case "CNAME":
-				addrs, err = LookupCNAME(host, server, c, m)
+				addrs, err = LookupCNAME(ctx, host, server, c, m)
 			case "MX":
-				addrs, err = LookupMX(host, server, c, m)
+				addrs, err = LookupMX(ctx, host, server, c, m)
 			case "NS":
-				addrs, err = LookupNS(host, server, c, m)
+				addrs, err = LookupNS(ctx, host, server, c, m)
 			case "SRV":
-				addrs, err = LookupSRV(host, server, c, m)
+				addrs, err = LookupSRV(ctx, host, server, c, m)
 			case "TXT":
-				addrs, err = LookupTXT(host, server, c, m)
+				addrs, err = LookupTXT(ctx, host, server, c, m)
 			case "SSHFP":
-				addrs, err = LookupSSHFP(host, server, c, m)
+				addrs, err = LookupSSHFP(ctx, host, server, c, m)
 			case "CAA":
-				addrs, err = LookupCAA(host, server, c, m)
+				addrs, err = LookupCAA(ctx, host, server, c, m)
 			default:
-				addrs, err = LookupHost(host, server, c, m)
+				addrs, err = LookupHost(ctx, host, server, c, m)
 			}
 		} else {
-			addrs, err = net.LookupHost(host)
+			addrs, err = net.DefaultResolver.LookupHost(ctx, host)
 		}
 		if err != nil {
 			e1 <- err
 		}
 		c1 <- addrs
 	}()
+	// A zero timeout means no timeout.
+	var timeoutC <-chan time.Time
+	if timeout > 0 {
+		timer := time.NewTimer(timeoutD)
+		defer timer.Stop()
+		timeoutC = timer.C
+	}
 	select {
 	case res := <-c1:
 		return res, nil
 	case err := <-e1:
 		return nil, err
-	case <-time.After(timeoutD):
+	case <-timeoutC:
 		return nil, fmt.Errorf("DNS lookup timed out (%s)", timeoutD)
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
 // A and AAAA record lookup - similar to net.LookupHost
-func LookupHost(host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
-	a, _ := LookupA(host, server, c, m)
-	aaaa, _ := LookupAAAA(host, server, c, m)
+func LookupHost(ctx context.Context, host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
+	a, _ := LookupA(ctx, host, server, c, m)
+	aaaa, _ := LookupAAAA(ctx, host, server, c, m)
 	addrs = append(a, aaaa...)
 
 	return
 }
 
 // A record lookup
-func LookupA(host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
+func LookupA(ctx context.Context, host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
 	m.SetQuestion(dns.Fqdn(host), dns.TypeA)
-	r, _, err := c.Exchange(m, parseServerString(server))
+	r, _, err := c.ExchangeContext(ctx, m, parseServerString(server))
 	if err != nil {
 		return nil, err
 	}
@@ -202,9 +219,9 @@ func parseServerString(server string) string {
 }
 
 // AAAA (IPv6) record lookup
-func LookupAAAA(host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
+func LookupAAAA(ctx context.Context, host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
 	m.SetQuestion(dns.Fqdn(host), dns.TypeAAAA)
-	r, _, err := c.Exchange(m, parseServerString(server))
+	r, _, err := c.ExchangeContext(ctx, m, parseServerString(server))
 	if err != nil {
 		return nil, err
 	}
@@ -219,9 +236,9 @@ func LookupAAAA(host string, server string, c *dns.Client, m *dns.Msg) (addrs []
 }
 
 // CNAME record lookup
-func LookupCNAME(host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
+func LookupCNAME(ctx context.Context, host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
 	m.SetQuestion(dns.Fqdn(host), dns.TypeCNAME)
-	r, _, err := c.Exchange(m, parseServerString(server))
+	r, _, err := c.ExchangeContext(ctx, m, parseServerString(server))
 	if err != nil {
 		return nil, err
 	}
@@ -236,9 +253,9 @@ func LookupCNAME(host string, server string, c *dns.Client, m *dns.Msg) (addrs [
 }
 
 // MX record lookup
-func LookupMX(host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
+func LookupMX(ctx context.Context, host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
 	m.SetQuestion(dns.Fqdn(host), dns.TypeMX)
-	r, _, err := c.Exchange(m, parseServerString(server))
+	r, _, err := c.ExchangeContext(ctx, m, parseServerString(server))
 	if err != nil {
 		return nil, err
 	}
@@ -254,9 +271,9 @@ func LookupMX(host string, server string, c *dns.Client, m *dns.Msg) (addrs []st
 }
 
 // NS record lookup
-func LookupNS(host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
+func LookupNS(ctx context.Context, host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
 	m.SetQuestion(dns.Fqdn(host), dns.TypeNS)
-	r, _, err := c.Exchange(m, parseServerString(server))
+	r, _, err := c.ExchangeContext(ctx, m, parseServerString(server))
 	if err != nil {
 		return nil, err
 	}
@@ -271,9 +288,9 @@ func LookupNS(host string, server string, c *dns.Client, m *dns.Msg) (addrs []st
 }
 
 // SRV record lookup
-func LookupSRV(host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
+func LookupSRV(ctx context.Context, host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
 	m.SetQuestion(dns.Fqdn(host), dns.TypeSRV)
-	r, _, err := c.Exchange(m, parseServerString(server))
+	r, _, err := c.ExchangeContext(ctx, m, parseServerString(server))
 	if err != nil {
 		return nil, err
 	}
@@ -292,9 +309,9 @@ func LookupSRV(host string, server string, c *dns.Client, m *dns.Msg) (addrs []s
 }
 
 // SSHFP record lookup
-func LookupSSHFP(host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
+func LookupSSHFP(ctx context.Context, host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
 	m.SetQuestion(dns.Fqdn(host), dns.TypeSSHFP)
-	r, _, err := c.Exchange(m, parseServerString(server))
+	r, _, err := c.ExchangeContext(ctx, m, parseServerString(server))
 	if err != nil {
 		return nil, err
 	}
@@ -313,9 +330,9 @@ func LookupSSHFP(host string, server string, c *dns.Client, m *dns.Msg) (addrs [
 }
 
 // TXT record lookup
-func LookupTXT(host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
+func LookupTXT(ctx context.Context, host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
 	m.SetQuestion(dns.Fqdn(host), dns.TypeTXT)
-	r, _, err := c.Exchange(m, parseServerString(server))
+	r, _, err := c.ExchangeContext(ctx, m, parseServerString(server))
 	if err != nil {
 		return nil, err
 	}
@@ -330,7 +347,7 @@ func LookupTXT(host string, server string, c *dns.Client, m *dns.Msg) (addrs []s
 }
 
 // PTR record lookup
-func LookupPTR(addr string, server string, c *dns.Client, m *dns.Msg) (name []string, err error) {
+func LookupPTR(ctx context.Context, addr string, server string, c *dns.Client, m *dns.Msg) (name []string, err error) {
 
 	reverse, err := dns.ReverseAddr(addr)
 	if err != nil {
@@ -339,7 +356,7 @@ func LookupPTR(addr string, server string, c *dns.Client, m *dns.Msg) (name []st
 
 	m.SetQuestion(reverse, dns.TypePTR)
 
-	r, _, err := c.Exchange(m, parseServerString(server))
+	r, _, err := c.ExchangeContext(ctx, m, parseServerString(server))
 	if err != nil {
 		return nil, err
 	}
@@ -352,9 +369,9 @@ func LookupPTR(addr string, server string, c *dns.Client, m *dns.Msg) (name []st
 }
 
 // CAA record lookup
-func LookupCAA(host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
+func LookupCAA(ctx context.Context, host string, server string, c *dns.Client, m *dns.Msg) (addrs []string, err error) {
 	m.SetQuestion(dns.Fqdn(host), dns.TypeCAA)
-	r, _, err := c.Exchange(m, parseServerString(server))
+	r, _, err := c.ExchangeContext(ctx, m, parseServerString(server))
 	if err != nil {
 		return nil, err
 	}

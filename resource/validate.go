@@ -1,6 +1,7 @@
 package resource
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"reflect"
@@ -127,6 +128,10 @@ func ValidateValue(res ResourceRead, property string, expectedValue any, actual 
 }
 
 func ValidateValueWithRetry(res ResourceRead, property string, expectedValue any, actualFunc func() (any, error), skip bool, retryCount int, retryDelay RetryDelay) TestResult {
+	return validateValueWithRetry(context.Background(), res, property, expectedValue, actualFunc, skip, retryCount, retryDelay)
+}
+
+func validateValueWithRetry(ctx context.Context, res ResourceRead, property string, expectedValue any, actualFunc func() (any, error), skip bool, retryCount int, retryDelay RetryDelay) TestResult {
 	if skip {
 		// Return skip result immediately
 		skipFunc := func() (any, error) { return nil, nil }
@@ -135,7 +140,7 @@ func ValidateValueWithRetry(res ResourceRead, property string, expectedValue any
 
 	var lastResult TestResult
 
-	runWithRetry(retryCount, retryDelay, func() bool {
+	runWithRetry(ctx, retryCount, retryDelay, func() bool {
 		actual, err := actualFunc()
 
 		// Create a function that returns the current result

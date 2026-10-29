@@ -96,7 +96,7 @@ func ValidateResults(ctx context.Context, c *util.Config) (results <-chan []reso
 
 	sys := system.New(c.PackageManager)
 
-	return validate(ctx, sys, *gossConfig, c.DisabledResourceTypes, c.MaxConcurrent), nil
+	return validate(ctx, sys, *gossConfig, c.DisabledResourceTypes, c.MaxConcurrent)
 }
 
 // Validate performs validation, writes formatted output to stdout by default
@@ -142,10 +142,19 @@ func ValidateConfig(ctx context.Context, c *util.Config, gossConfig *GossConfig)
 	i := 1
 	startTime := time.Now()
 	for {
-		out := validate(ctx, sys, *gossConfig, c.DisabledResourceTypes, c.MaxConcurrent)
+		out, err := validate(ctx, sys, *gossConfig, c.DisabledResourceTypes, c.MaxConcurrent)
+		if err != nil {
+			// Configuration error before any check ran, mirrors the exit code
+			// used when the gossfile itself cannot be loaded.
+			return 78, err
+		}
 		exitCode := outputer.Output(ofh, out, outputConfig)
 		if retryTimeout == 0 || exitCode == 0 {
 			return exitCode, nil
+		}
+		// The run was cancelled: do not enter the retry sleep, return promptly.
+		if err := ctx.Err(); err != nil {
+			return exitCode, err
 		}
 		elapsed := time.Since(startTime)
 		if elapsed+sleep > retryTimeout {
@@ -154,25 +163,50 @@ func ValidateConfig(ctx context.Context, c *util.Config, gossConfig *GossConfig)
 		color.Red("Retrying in %s (elapsed/timeout time: %.3fs/%s)\n\n\n", sleep, elapsed.Seconds(), retryTimeout)
 		// Reset cache
 		sys = system.New(c.PackageManager)
-		time.Sleep(sleep)
+		select {
+		case <-time.After(sleep):
+		case <-ctx.Done():
+			return exitCode, ctx.Err()
+		}
 		i++
 		fmt.Printf("Attempt #%d:\n", i)
 	}
 }
 
-func validate(ctx context.Context, sys *system.System, gossConfig GossConfig, skipList []string, maxConcurrent int) <-chan []resource.TestResult {
+// validateMaxConcurrency checks the caller supplied concurrency cap before any
+// goroutine is started. maxConcurrent is a hard limit, so 0 or negative values
+// are rejected explicitly instead of silently spawning zero workers (which
+// deadlocks the feeder) or falling back to another number.
+func validateMaxConcurrency(maxConcurrent int) error {
+	if maxConcurrent <= 0 {
+		return fmt.Errorf("max-concurrent must be a positive integer, got %d", maxConcurrent)
+	}
+	return nil
+}
+
+func validate(ctx context.Context, sys *system.System, gossConfig GossConfig, skipList []string, maxConcurrent int) (<-chan []resource.TestResult, error) {
+	if err := validateMaxConcurrency(maxConcurrent); err != nil {
+		return nil, err
+	}
+
 	out := make(chan []resource.TestResult)
 	in := make(chan resource.Resource)
 
+	// Feeder: once ctx is cancelled no new resource is handed to a worker, so
+	// checks that were still queued never start.
 	go func() {
+		defer close(in)
 		for _, t := range gossConfig.Resources() {
 			if util.IsValueInList(t.TypeName(), skipList) || util.IsValueInList(t.TypeKey(), skipList) {
 				t.SetSkip()
 			}
 
-			in <- t
+			select {
+			case in <- t:
+			case <-ctx.Done():
+				return
+			}
 		}
-		close(in)
 	}()
 
 	workerCount := runtime.NumCPU() * 5
@@ -184,8 +218,29 @@ func validate(ctx context.Context, sys *system.System, gossConfig GossConfig, sk
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for f := range in {
-				out <- f.Validate(ctx, sys)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case f, ok := <-in:
+					if !ok {
+						return
+					}
+					// A cancellation that landed while this resource was being
+					// dequeued means it had not started yet; do not run it.
+					if ctx.Err() != nil {
+						return
+					}
+					results := f.Validate(ctx, sys)
+					// Never block the worker on a result send after cancel:
+					// the reader may have gone away and in-flight results are
+					// no longer wanted.
+					select {
+					case out <- results:
+					case <-ctx.Done():
+						return
+					}
+				}
 			}
 		}()
 	}
@@ -195,5 +250,5 @@ func validate(ctx context.Context, sys *system.System, gossConfig GossConfig, sk
 		close(out)
 	}()
 
-	return out
+	return out, nil
 }

@@ -32,6 +32,7 @@ type HTTP interface {
 }
 
 type DefHTTP struct {
+	ctx               context.Context
 	http              string
 	allowInsecure     bool
 	noFollowRedirects bool
@@ -50,7 +51,7 @@ type DefHTTP struct {
 	Proxy             string
 }
 
-func NewDefHTTP(_ context.Context, httpStr string, system *System, config util.Config) HTTP {
+func NewDefHTTP(ctx context.Context, httpStr string, system *System, config util.Config) HTTP {
 	headers := http.Header{}
 
 	if !hasUserAgentHeader(config.RequestHeader) {
@@ -66,6 +67,7 @@ func NewDefHTTP(_ context.Context, httpStr string, system *System, config util.C
 		headers.Add(strings.TrimSpace(name), strings.TrimSpace(value))
 	}
 	return &DefHTTP{
+		ctx:               ctx,
 		http:              httpStr,
 		allowInsecure:     config.AllowInsecure,
 		Method:            config.Method,
@@ -158,7 +160,7 @@ func (u *DefHTTP) setupReal() error {
 		}
 	}
 
-	req, err := http.NewRequest(u.Method, u.http, strings.NewReader(u.RequestBody))
+	req, err := http.NewRequestWithContext(u.ctx, u.Method, u.http, strings.NewReader(u.RequestBody))
 	if err != nil {
 		return err
 	}

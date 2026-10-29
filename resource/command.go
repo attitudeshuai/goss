@@ -70,7 +70,7 @@ func (c *Command) Validate(ctx context.Context, sys *system.System) []TestResult
 
 	var results []TestResult
 
-	runWithRetry(c.RetryCount, c.RetryDelay, func() bool {
+	runWithRetry(ctx, c.RetryCount, c.RetryDelay, func() bool {
 		sysCommand := sys.NewCommand(ctx, c.GetExec(), sys, util.Config{Timeout: time.Duration(c.Timeout) * time.Millisecond})
 
 		results = []TestResult{}

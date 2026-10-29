@@ -58,7 +58,7 @@ func (p *Package) Validate(ctx context.Context, sys *system.System) []TestResult
 
 	// Handle retry logic for installed check
 	if p.RetryCount > 0 {
-		results = append(results, ValidateValueWithRetry(p, "installed", p.Installed,
+		results = append(results, validateValueWithRetry(ctx, p, "installed", p.Installed,
 			func() (any, error) {
 				sysPkg := sys.NewPackage(ctx, p.GetName(), sys, util.Config{})
 				return sysPkg.Installed()
@@ -75,7 +75,7 @@ func (p *Package) Validate(ctx context.Context, sys *system.System) []TestResult
 	// Handle retry logic for versions check
 	if p.Versions != nil {
 		if p.RetryCount > 0 {
-			results = append(results, ValidateValueWithRetry(p, "version", p.Versions,
+			results = append(results, validateValueWithRetry(ctx, p, "version", p.Versions,
 				func() (any, error) {
 					sysPkg := sys.NewPackage(ctx, p.GetName(), sys, util.Config{})
 					return sysPkg.Versions()

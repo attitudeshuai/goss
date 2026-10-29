@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"runtime"
 	"strings"
 	"time"
@@ -438,7 +439,12 @@ func main() {
 	}
 
 	addAlphaFlagIfNeeded(app)
-	err := app.Run(context.Background(), os.Args)
+	// Ctrl-C cancels the run instead of hard-killing the process, so an
+	// in-flight validation winds its workers down (and stops the checks it
+	// started) before goss exits.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	err := app.Run(ctx, os.Args)
 	if err != nil {
 		log.Fatal(err)
 	}

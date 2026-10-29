@@ -69,7 +69,7 @@ func (d *DNS) Validate(ctx context.Context, sys *system.System) []TestResult {
 	}
 	// Retry logic for resolvable
 	if d.RetryCount > 0 {
-		results = append(results, ValidateValueWithRetry(d, "resolvable", d.Resolvable, func() (any, error) {
+		results = append(results, validateValueWithRetry(ctx, d, "resolvable", d.Resolvable, func() (any, error) {
 			sysDNS := sys.NewDNS(ctx, d.GetResolve(), sys, util.Config{Timeout: time.Duration(d.Timeout) * time.Millisecond, Server: d.Server})
 			return sysDNS.Resolvable()
 		}, skip, d.RetryCount, d.RetryDelay))
@@ -82,7 +82,7 @@ func (d *DNS) Validate(ctx context.Context, sys *system.System) []TestResult {
 	}
 	if isSetWarnEmpty(d.Addrs, fmt.Sprintf("%s: dns.addrs", d.ID())) {
 		if d.RetryCount > 0 {
-			results = append(results, ValidateValueWithRetry(d, "addrs", d.Addrs, func() (any, error) {
+			results = append(results, validateValueWithRetry(ctx, d, "addrs", d.Addrs, func() (any, error) {
 				sysDNS := sys.NewDNS(ctx, d.GetResolve(), sys, util.Config{Timeout: time.Duration(d.Timeout) * time.Millisecond, Server: d.Server})
 				return sysDNS.Addrs()
 			}, skip, d.RetryCount, d.RetryDelay))

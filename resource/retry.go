@@ -1,6 +1,7 @@
 package resource
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -123,7 +124,7 @@ func retryAttempts(retryCount int) int {
 	return retryCount + 1
 }
 
-func runWithRetry(retryCount int, retryDelay RetryDelay, validate func() bool) {
+func runWithRetry(ctx context.Context, retryCount int, retryDelay RetryDelay, validate func() bool) {
 	attempts := retryAttempts(retryCount)
 	delay := normalizedRetryDelay(retryDelay)
 
@@ -133,7 +134,11 @@ func runWithRetry(retryCount int, retryDelay RetryDelay, validate func() bool) {
 		}
 
 		if attempt < attempts-1 {
-			time.Sleep(delay)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return
+			}
 		}
 	}
 }

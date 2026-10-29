@@ -55,6 +55,12 @@ func newHealthHandler(c *util.Config) (*healthHandler, error) {
 		return nil, err
 	}
 
+	// Fail serve startup on an invalid concurrency cap instead of discovering
+	// it on the first probe, so the CLI exits with a clear error.
+	if err := validateMaxConcurrency(c.MaxConcurrent); err != nil {
+		return nil, err
+	}
+
 	health := &healthHandler{
 		c:             c,
 		gossConfig:    *cfg,
@@ -114,8 +120,21 @@ func (h healthHandler) processAndEnsureCached(ctx context.Context, negotiatedCon
 	} else {
 		log.Printf(cacheMissLogFormat, cacheKey)
 		h.sys = system.New(h.c.PackageManager)
-		tra = h.validate(ctx)
-		h.cache.SetDefault(cacheKey, tra)
+		results, err := h.validate(ctx)
+		if err != nil {
+			h.gossMu.Unlock()
+			log.Printf("[WARN] validation could not run: %v", err)
+			return res{statusCode: http.StatusServiceUnavailable}
+		}
+		tra = results
+		// A probe whose context was cancelled produced partial results; never
+		// cache them, otherwise the next request would be served a truncated
+		// suite until the cache entry expired.
+		if ctx.Err() == nil {
+			h.cache.SetDefault(cacheKey, tra)
+		} else {
+			log.Printf("[DEBUG] probe cancelled, not caching results")
+		}
 	}
 	h.gossMu.Unlock()
 
@@ -139,14 +158,17 @@ func (h healthHandler) output(trc <-chan []resource.TestResult, outputer outputs
 	}
 	return resp
 }
-func (h healthHandler) validate(ctx context.Context) [][]resource.TestResult {
+func (h healthHandler) validate(ctx context.Context) ([][]resource.TestResult, error) {
 	h.sys = system.New(h.c.PackageManager)
 	res := make([][]resource.TestResult, 0)
-	tr := validate(ctx, h.sys, h.gossConfig, h.c.DisabledResourceTypes, h.maxConcurrent)
+	tr, err := validate(ctx, h.sys, h.gossConfig, h.c.DisabledResourceTypes, h.maxConcurrent)
+	if err != nil {
+		return nil, err
+	}
 	for i := range tr {
 		res = append(res, i)
 	}
-	return res
+	return res, nil
 }
 
 func testResultArrayToChan(tra [][]resource.TestResult) <-chan []resource.TestResult {

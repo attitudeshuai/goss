@@ -73,14 +73,14 @@ func (c *DefCommand) setup() error {
 	var cmd *util.Command
 	switch {
 	case c.command.CmdStr != "":
-		cmd = commandWrapper(c.command.CmdStr)
+		cmd = commandWrapper(c.Ctx, c.command.CmdStr)
 	case len(c.command.CmdSlice) > 0:
-		cmd = util.NewCommand(c.command.CmdSlice[0], c.command.CmdSlice[1:]...)
+		cmd = util.NewCommandContext(c.Ctx, c.command.CmdSlice[0], c.command.CmdSlice[1:]...)
 	default:
 		c.err = errEmptyCommand
 		return c.err
 	}
-	err := runCommand(cmd, c.Timeout)
+	err := runCommand(c.Ctx, cmd, c.Timeout)
 
 	// We don't care about ExitError since it's covered by status
 	if _, ok := err.(*exec.ExitError); !ok {
@@ -126,7 +126,7 @@ func (c *DefCommand) Exists() (bool, error) {
 	return false, nil
 }
 
-func runCommand(cmd *util.Command, timeout int) error {
+func runCommand(ctx context.Context, cmd *util.Command, timeout int) error {
 	c1 := make(chan bool, 1)
 	e1 := make(chan error, 1)
 	timeoutD := time.Duration(timeout) * time.Millisecond
@@ -137,12 +137,34 @@ func runCommand(cmd *util.Command, timeout int) error {
 		}
 		c1 <- true
 	}()
+	// A zero timeout means no timeout.
+	var timeoutC <-chan time.Time
+	if timeout > 0 {
+		timer := time.NewTimer(timeoutD)
+		defer timer.Stop()
+		timeoutC = timer.C
+	}
 	select {
 	case <-c1:
+		// Attribute a wakeup that raced with cancellation to the
+		// cancellation so the caller gets a deterministic result.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return nil
 	case err := <-e1:
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return err
-	case <-time.After(timeoutD):
+	case <-timeoutC:
 		return fmt.Errorf("Command execution timed out (%s)", timeoutD)
+	case <-ctx.Done():
+		// The command was created with ctx, so its process is already being
+		// killed. Wait for Run to finish: it owns the stdout/stderr buffers
+		// that the caller reads afterwards, and returning before Wait would
+		// race those writes.
+		<-c1
+		return ctx.Err()
 	}
 }

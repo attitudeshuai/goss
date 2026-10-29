@@ -16,14 +16,16 @@ type Addr interface {
 }
 
 type DefAddr struct {
+	ctx          context.Context
 	address      string
 	LocalAddress string
 	Timeout      int
 }
 
-func NewDefAddr(_ context.Context, address string, system *System, config util.Config) Addr {
+func NewDefAddr(ctx context.Context, address string, system *System, config util.Config) Addr {
 	addr := normalizeAddress(address)
 	return &DefAddr{
+		ctx:          ctx,
 		address:      addr,
 		LocalAddress: config.LocalAddress,
 		Timeout:      config.TimeOutMilliSeconds(),
@@ -48,7 +50,7 @@ func (a *DefAddr) Reachable() (bool, error) {
 		localAddr = &net.TCPAddr{IP: net.ParseIP(a.LocalAddress)}
 	}
 	d := net.Dialer{LocalAddr: localAddr, Timeout: time.Duration(a.Timeout) * time.Millisecond}
-	conn, err := d.Dial(network, address)
+	conn, err := d.DialContext(a.ctx, network, address)
 	if err != nil {
 		return false, nil
 	}
